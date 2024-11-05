@@ -58,7 +58,8 @@ with dashboard:
 
         group_by_node_period = df.groupby(['Node', 'period']).mean().reset_index()
         group_by_node_period = group_by_node_period.sort_values(by='period')
-        periods = list(set(group_by_node_period['period']))
+        periods = list(set(group_by_node_period['period'].tolist()))
+        periods.sort()
         # Find initial position for each Node at period[0]
         initial_positions = group_by_node_period[group_by_node_period['period'] == periods[0]].set_index('Node')[['x', 'y', 'z']]
 
