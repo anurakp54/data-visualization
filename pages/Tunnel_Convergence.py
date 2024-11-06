@@ -20,34 +20,31 @@ def calculate_distance(row):
 
 dist_df = pd.DataFrame(data=[],columns=['From','To','Distance','timestamp','period'])
 
+datapath = 'data/'
+
 dashboard = st.container()
+
 with st.sidebar:
     contract = st.selectbox(
         'Select Contract: C2, C3', ('C2', 'C3')
     )
-
-    Direction = st.selectbox(
-        'Select Direction: North-Up, North-Down, South-Up, South-Down',('N-UP', 'N-DN','S-UP','S-DN')
+    dataFile = st.selectbox(
+        'Select DataFile',os.listdir(datapath)
     )
-
-
-datapath = 'data/'
-files = os.listdir(datapath)
-for file in files:
-    if (file[:7]) == contract+"-"+Direction:
-        loaded_file = open(datapath + file, 'rb')
-        # dump information to that file
-        df = pickle.load(loaded_file)
-        #df['x'] = -1*df['x']
-        df['y'] = -1*df['y']
-        #df['z'] = -1*df['z']
 
 with dashboard:
     st.header(f"Tunnel Convergence Data Visualization")
 
     try:
-    # Plot Graph
-        st.subheader(f"Denchai Chieng Rai - Chieng Khong Project: {contract}-{Direction}")
+        loaded_file = open(datapath + dataFile, 'rb')
+        # dump information to that file
+        df = pickle.load(loaded_file)
+        # df['x'] = -1*df['x']
+        df['y'] = -1 * df['y']
+        # df['z'] = -1*df['z']
+
+        # Plot Graph
+        st.subheader(f"Denchai Chieng Rai - Chieng Khong Project: {contract}")
 
         # Sidebar selection
         st.sidebar.header("Filter Options")
