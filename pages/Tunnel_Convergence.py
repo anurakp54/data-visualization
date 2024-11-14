@@ -5,8 +5,7 @@ import altair as alt
 from datetime import datetime
 import numpy as np
 import pickle
-
-
+import math
 def app():
     pass
 
@@ -17,6 +16,29 @@ def calculate_distance(row):
         (row['y'] - initial_position['y']) ** 2 +
         (row['z'] - initial_position['z']) ** 2
     )
+
+
+def close_loop(points):
+    # Ensure the loop is closed by repeating the first point
+    points = np.vstack([points, points[0]])
+
+    # Separate x and y coordinates
+    x = points[:, 0]
+    y = points[:, 1]
+
+    ## Parameterize based on a simple linear parameter for each point
+    #t = np.linspace(0, 1, len(points))
+
+    # Create periodic cubic splines with boundary conditions
+    #cs_x = CubicSpline(t, x, bc_type='periodic')
+    #cs_y = CubicSpline(t, y, bc_type='periodic')
+
+    # Generate fine points for a smooth closed loop
+    #t_fine = np.linspace(0, 1,10)
+    #x_fine = cs_x(t_fine)
+    #y_fine = cs_y(t_fine)
+
+    return x, y
 
 dist_df = pd.DataFrame(data=[],columns=['From','To','Distance','timestamp','period'])
 
