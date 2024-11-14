@@ -17,7 +17,6 @@ def calculate_distance(row):
         (row['z'] - initial_position['z']) ** 2
     )
 
-
 def close_loop(points):
     # Ensure the loop is closed by repeating the first point
     points = np.vstack([points, points[0]])
