@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import pickle
 import math
+import joblib
 
 
 def app():
@@ -67,8 +68,8 @@ with dashboard:
     try:
         loaded_file = open(datapath + dataFile, 'rb')
         # dump information to that file
-        df = pickle.load(loaded_file)
-        #df = joblib.load(datapath+dataFile)
+        #df = pickle.load(loaded_file)
+        df = joblib.load(datapath+dataFile)
         df['x'] =  1 * df['x']
         df['y'] =  -1 * df['y']
         # df['z'] = -1*df['z']
