@@ -8,7 +8,6 @@ import pickle
 import math
 import joblib
 
-
 def app():
     pass
 
@@ -47,6 +46,13 @@ def close_loop(points):
     return x, y
 
 
+def calculate_angle(row):
+    return math.atan2(row['y'] - centroid_ref_y, row['x'] - centroid_ref_x)
+
+def calculate_angle2(row, centroid_x, centroid_y):
+    return math.atan2(row['y'] - centroid_y, row['x'] - centroid_x)
+
+
 dist_df = pd.DataFrame(data=[],columns=['From','To','Distance','timestamp','period'])
 datapath = 'data/'
 # Filter files in the directory containing "cha" in their names
@@ -70,7 +76,7 @@ with dashboard:
         # dump information to that file
         #df = pickle.load(loaded_file)
         df = joblib.load(datapath+dataFile)
-        df['x'] =  1 * df['x']
+        df['x'] =  -1 * df['x']
         df['y'] =  -1 * df['y']
         # df['z'] = -1*df['z']
         df['norm'] = df.apply(lambda row: np.linalg.norm([row['x'], row['y'], row['z']]), axis=1)
@@ -96,9 +102,6 @@ with dashboard:
 
         centroid_ref_x = reference_shape['x'].mean()
         centroid_ref_y = reference_shape['y'].mean()
-
-        def calculate_angle(row):
-            return math.atan2(row['y'] - centroid_ref_y, row['x'] - centroid_ref_x)
 
         reference_shape['angle'] = reference_shape.apply(calculate_angle, axis=1)
         reference_shape.sort_values(by='angle', ascending=False, inplace=True)
@@ -130,6 +133,7 @@ with dashboard:
         # Compute row differences for numeric columns, grouped by `Node`
         numeric_cols = ['x', 'y', 'z']
         df_differences = group_by_node_period.groupby('Node')[numeric_cols].diff()
+        pd.set_option('future.no_silent_downcasting', True)
         df_differences = df_differences.fillna(0)
         group_by_node_period = pd.concat([group_by_node_period, df_differences.add_suffix('_diff')],axis=1)
 
@@ -138,6 +142,7 @@ with dashboard:
         select_period = pd.to_datetime(select_period)
 
         periods.sort()
+
         initial_positions = group_by_node_period[group_by_node_period['period'] == periods[0]].set_index('Node')[['x', 'y', 'z']]
         # Calculate distances and add as a new column
         group_by_node_period['displacement'] = group_by_node_period.apply(calculate_distance, axis=1) # diff distance compare to initial reading time[0]
@@ -164,38 +169,39 @@ with dashboard:
         group_by_node_period['4d-Mavg'] = group_by_node_period['signed_diff_disp'].rolling(window=2).sum()
         group_by_node_period['period'] = pd.to_datetime(group_by_node_period['period'])
         group_by_node_period_filter = group_by_node_period[group_by_node_period['period'].isin(select_period.tolist())]
-        print(group_by_node_period_filter)
 
-        reference_shape_period = group_by_node_period_filter[group_by_node_period_filter['period'] == select_period[0]][['x', 'y']]
+        # Prepare data for all selected periods
+        all_periods_data = []
 
-        centroid_ref_x_period = reference_shape_period['x'].mean()
-        centroid_ref_y_period = reference_shape_period['y'].mean()
+        for period in select_period:
+            # Filter data for the current period
+            shape_period = group_by_node_period_filter[group_by_node_period_filter['period'] == period][['x', 'y']]
 
-        def calculate_angle_period(row):
-            return math.atan2(row['y'] - centroid_ref_y_period, row['x'] - centroid_ref_x_period)
+            # Calculate centroid
+            centroid_x = shape_period['x'].mean()
+            centroid_y = shape_period['y'].mean()
 
-        reference_shape_period['angle'] = reference_shape_period.apply(calculate_angle_period, axis=1)
-        reference_shape_period.sort_values(by='angle', ascending=False, inplace=True)
+            # Add angle column for sorting
+            shape_period['angle'] = shape_period.apply(
+                lambda row: calculate_angle2(row, centroid_x, centroid_y), axis=1
+            )
+            shape_period.sort_values(by='angle', ascending=False, inplace=True)
 
-        latest_shape_period = group_by_node_period_filter[group_by_node_period_filter['period'] == select_period[-1]][
-            ['x', 'y']]
+            # Repeat the starting point at the end to close the loop
+            starting_point = shape_period.iloc[0]
+            shape_period = pd.concat([shape_period, pd.DataFrame([starting_point])], ignore_index=True)
 
-        centroid_x_period = latest_shape_period['x'].mean()
-        centroid_y_period = latest_shape_period['y'].mean()
+            # Add a "period" column for identifying the period
+            shape_period['period'] = period
 
-        latest_shape_period['angle'] = latest_shape_period.apply(calculate_angle, axis=1)
-        latest_shape_period.sort_values(by='angle', ascending=False, inplace=True)
+            # Append the processed data to the list
+            all_periods_data.append(shape_period)
 
-        reference_shape_period_array = reference_shape_period[['x', 'y']].values
-        latest_shape_period_array = latest_shape_period[['x', 'y']].values
 
-        ref_x_period, ref_y_period = close_loop(reference_shape_period_array)
-        _x_period, _y_period = close_loop(latest_shape_period_array)
-
-        ref_xy_period_df = pd.DataFrame({'ref_x': ref_x_period, 'ref_y': ref_y_period})
-        ref_xy_period_df['order'] = range(len(ref_xy_period_df))
-        _xy_period_df = pd.DataFrame({'x': _x_period, 'y': _y_period})
-        _xy_period_df['order'] = range(len(_xy_period_df))
+        # Combine data for all periods
+        all_periods_df = pd.concat(all_periods_data, ignore_index=True)
+        # Add an order column to ensure Altair connects points in the correct order
+        all_periods_df['order'] = all_periods_df.groupby('period').cumcount()
 
 
         # Plot with Altair
@@ -233,6 +239,7 @@ with dashboard:
             st.altair_chart(chart, use_container_width=True)
 
             st.subheader("Relative Movement Plot - Period")
+
             points_period = alt.Chart(group_by_node_period).mark_circle(size=75).encode(
                 x='x:Q',
                 y='y:Q',
@@ -249,18 +256,19 @@ with dashboard:
                 text='Node:N'
             )
 
-            ref_shape_period_plot = alt.Chart(ref_xy_period_df).mark_line().encode(
-                x='ref_x',
-                y='ref_y',
-                order='order'
-            )
-            latest_shape_period_plot = alt.Chart(_xy_period_df).mark_line(strokeDash=[5, 5], color='red').encode(
-                x='x',
-                y='y',
-                order='order',
-            )
+            ref_shape_period_plot = alt.Chart(all_periods_df).mark_line(strokeDash=[8,2]).encode(
+                                x='x:Q',
+                                y='y:Q',
+                                color=alt.Color('period:T',scale=alt.Scale(scheme='category10')),  # Distinguish periods by color
+                                order='order:Q',  # Ensure points are connected in order of angle
+                                tooltip=['period:N', 'x:Q', 'y:Q', 'angle:Q']  # Add interactivity
+                            ).properties(
+                                title="Shapes for Selected Periods (Closed Loop & Angle Sorted)",
+                                width=800,
+                                height=600
+                            ).interactive()
 
-            chart_period = (points_period + text_period + ref_shape_period_plot + latest_shape_period_plot).interactive()
+            chart_period = (points_period + text_period + ref_shape_period_plot).interactive()
             st.altair_chart(chart_period, use_container_width=True)
 
             st.subheader("Data Analysis Plot")
