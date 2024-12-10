@@ -5,11 +5,97 @@ import altair as alt
 from datetime import datetime
 import numpy as np
 import pickle
+from scipy.interpolate import CubicSpline, make_interp_spline
 import math
 import joblib
 
 def app():
     pass
+
+
+def restack_points(points):
+    # Sort points based on y-values to easily identify top and bottom points
+    while True:
+        # Extract the top and bottom rows
+        top_row = points[0]
+        bottom_row = points[-1]
+
+        # Check if the top and bottom have y-values less than all others
+        if top_row[1] < min(points[1:-1, 1]) and bottom_row[1] < min(points[1:-1, 1]):
+            break
+
+        # Move the top row to the bottom and repeat
+        points = np.vstack([points[1:], top_row])  # Move top to bottom
+
+    return points
+
+def interpolate_closed_loop_smooth(points, Rmin, Rmax, loop = True):
+    # Ensure points are of type float
+    points = points.astype('float')
+
+    # Find the center of the points (mean of x and y coordinates)
+    center_x = points[:, 0].mean()
+    center_y = points[:, 1].mean()  # Use mean for both coordinates
+    center = (center_x, center_y)
+
+    # Calculate radii and angles relative to the center
+    deltas = points - center
+    radii = np.sqrt(np.sum(deltas ** 2, axis=1))
+    angles = np.arctan2(deltas[:, 1], deltas[:, 0])
+
+    # Constrain the radii to [Rmin, Rmax]
+    radii = np.clip(radii, Rmin, Rmax)
+
+    # Sort points by angle (to ensure correct circular order)
+    sorted_indices = np.argsort(angles)
+    points_sorted = points[sorted_indices]
+    radii_sorted = radii[sorted_indices]
+    angles_sorted = angles[sorted_indices]
+
+    constrained_points = restack_points(points_sorted)
+
+    #print(constrained_points)
+    # Extract x and y coordinates
+    x = constrained_points[:, 0]
+    y = constrained_points[:, 1]
+
+    # Calculate distances between consecutive points
+    distances = np.sqrt(np.diff(x, append=x[0]) ** 2 + np.diff(y, append=y[0]) ** 2)
+    cumulative_distances = np.cumsum(distances)
+    t = cumulative_distances / cumulative_distances[-1]  # Normalize to [0, 1]
+
+    if loop == True:
+        x = np.append(x, x[0])
+        y = np.append(y, y[0])
+        t = np.append(t, 1)
+        bc_type = 'periodic'
+    else:
+        bc_type = 'natural'
+
+    # Ensure that t is strictly increasing (by using linspace)
+    t = np.linspace(0, 1, len(t))
+
+    # Parametric cubic spline for x and y with periodic boundary conditions
+    spline_x = CubicSpline(t, x, bc_type=bc_type)
+    spline_y = CubicSpline(t, y, bc_type=bc_type)
+
+    # Generate a smooth parameter for the curve
+    t_smooth = np.linspace(0, 1, 1000)
+
+    # Interpolate x and y coordinates
+    x_smooth = spline_x(t_smooth)
+    y_smooth = spline_y(t_smooth)
+
+    # Constrain the radii again to avoid points exceeding Rmax or Rmin
+    smoothed_deltas = np.column_stack((x_smooth - center[0], y_smooth - center[1]))
+    smoothed_radii = np.sqrt(np.sum(smoothed_deltas ** 2, axis=1))
+    smoothed_radii = np.clip(smoothed_radii, Rmin, Rmax)
+
+    # Apply the smoothed radii
+    x_smooth = smoothed_radii * np.cos(np.arctan2(y_smooth - center[1], x_smooth - center[0])) + center[0]
+    y_smooth = smoothed_radii * np.sin(np.arctan2(y_smooth - center[1], x_smooth - center[0])) + center[1]
+
+    return x_smooth, y_smooth
 
 def calculate_distance(row):
     initial_position = initial_positions.loc[row['Node']]
@@ -69,30 +155,44 @@ with st.sidebar:
     )
 
 with dashboard:
-    st.header(f"Tunnel Convergence Data Visualization")
+    st.header(f"Data Visualization")
 
     try:
         loaded_file = open(datapath + dataFile, 'rb')
         # dump information to that file
         #df = pickle.load(loaded_file)
         df = joblib.load(datapath+dataFile)
-        df['x'] =  -1 * df['x']
+        df['x'] =  1 * df['x']
         df['y'] =  -1 * df['y']
         # df['z'] = -1*df['z']
-        df['norm'] = df.apply(lambda row: np.linalg.norm([row['x'], row['y'], row['z']]), axis=1)
+        df['norm'] = df.apply(lambda row: np.linalg.norm([row['x'], row['y'], row['z']]), axis=1) # norm is radius from centroid [0,0]
 
         # Plot Graph
-        st.subheader(f"Denchai Chieng Rai - Chieng Khong Project: {dataFile[:-4]}")
+        st.subheader(f"Project: {dataFile[:-4]}")
 
         # Sidebar selection
         st.sidebar.header("Filter Options")
 
         selected_timestamps = st.sidebar.multiselect("Select Timestamp",
-                                                     df['timestamp'].dt.strftime('%Y-%m-%d_%H-%M-%S').unique())
+                                                     df['timestamp'].dt.strftime('%Y-%m-%d').unique())
         crown_node = st.sidebar.selectbox("Select Crown Node", df['Node'].unique())
 
+        moving_day = st.sidebar.number_input(
+            label = "Enter a moving average, days",
+            min_value = 1,
+            max_value = 30,
+            value = 7,
+            step =1
+        )
+
+        loop = st.sidebar.radio(
+            "Plot an Close Loop:",
+            options=[True, False],
+            format_func=lambda x: "True" if x else "False"
+        )
+
         # Filter DataFrame based on selected timestamps
-        filtered_df = df[df['timestamp'].dt.strftime('%Y-%m-%d_%H-%M-%S').isin(selected_timestamps)]
+        filtered_df = df[df['timestamp'].dt.strftime('%Y-%m-%d').isin(selected_timestamps)]
 
         # Plot Shape of Tunnel
         plot_timestamps = filtered_df['timestamp'].dt.strftime('%Y-%m-%d_%H-%M-%S').unique()
@@ -135,18 +235,20 @@ with dashboard:
         df_differences = group_by_node_period.groupby('Node')[numeric_cols].diff()
         pd.set_option('future.no_silent_downcasting', True)
         df_differences = df_differences.fillna(0)
+
         group_by_node_period = pd.concat([group_by_node_period, df_differences.add_suffix('_diff')],axis=1)
 
         periods = sorted(list(set(group_by_node_period['period'].tolist())))
-        select_period = st.sidebar.multiselect("Select Period", periods)
-        select_period = pd.to_datetime(select_period)
+
+        select_period = pd.to_datetime(selected_timestamps)
+        select_period = select_period.sort_values()
 
         periods.sort()
 
         initial_positions = group_by_node_period[group_by_node_period['period'] == periods[0]].set_index('Node')[['x', 'y', 'z']]
         # Calculate distances and add as a new column
         group_by_node_period['displacement'] = group_by_node_period.apply(calculate_distance, axis=1) # diff distance compare to initial reading time[0]
-        group_by_node_period['diff_displacement'] = group_by_node_period.apply(calculate_diff_distance, axis=1) # diff distance compare to previous timestep
+        group_by_node_period['diff_displacement'] = group_by_node_period.apply(calculate_diff_distance, axis=1) # diff distance compare to previous timestep == velocity
 
         def apply_signed_norm(row, previous_norm):
             if previous_norm is None:  # First row, no previous comparison
@@ -166,9 +268,37 @@ with dashboard:
                 signed_norm.append(apply_signed_norm(group_by_node_period.loc[i], group_by_node_period.loc[i - 1, 'norm']))
 
         group_by_node_period['signed_diff_disp'] = signed_norm
-        group_by_node_period['4d-Mavg'] = group_by_node_period['signed_diff_disp'].rolling(window=2).sum()
+        #group_by_node_period['7d-Mavg'] = group_by_node_period['diff_displacement'].rolling(window=moving_day).mean()
+
         group_by_node_period['period'] = pd.to_datetime(group_by_node_period['period'])
+
+        # Save group_by_node_period for noise filtering
+        #file_path = f'data/group_by_node_period_df.pkl'
+
+        #joblib.dump(group_by_node_period, file_path)
+
         group_by_node_period_filter = group_by_node_period[group_by_node_period['period'].isin(select_period.tolist())]
+
+        # Generate Shape passing monitor points at period[0]
+        points = group_by_node_period_filter[group_by_node_period_filter['period'] == select_period[0]][['x', 'y']]
+        # Interpolate the closed loop
+        Rmin = points['x'].max()*0.2
+        Rmax = points['y'].max()*2.5
+
+        x_smooth, y_smooth = interpolate_closed_loop_smooth(points[['x','y']].values, Rmin,Rmax, loop)
+
+        # Convert the smooth path and sampled points to a DataFrame for Altair
+        df_smooth = pd.DataFrame({'x': x_smooth, 'y': y_smooth})
+        df_smooth['order'] = range(len(df_smooth))
+
+        # Generate Shape passing monitor points at period[-1]
+        points_t = group_by_node_period_filter[group_by_node_period_filter['period'] == select_period[-1]][['x', 'y']]
+        # Interpolate the closed loop
+        x_smooth_t, y_smooth_t = interpolate_closed_loop_smooth(points_t[['x', 'y']].values,Rmin,Rmax, loop)
+
+        # Convert the smooth path and sampled points to a DataFrame for Altair
+        df_smooth_t = pd.DataFrame({'x': x_smooth_t, 'y': y_smooth_t})
+        df_smooth_t['order'] = range(len(df_smooth_t))
 
         # Prepare data for all selected periods
         all_periods_data = []
@@ -203,47 +333,17 @@ with dashboard:
         # Add an order column to ensure Altair connects points in the correct order
         all_periods_df['order'] = all_periods_df.groupby('period').cumcount()
 
-
         # Plot with Altair
         if not filtered_df.empty:
-            points = alt.Chart(filtered_df).mark_circle(size=75).encode(
-                x='x:Q',
-                y='y:Q',
-                color='period:N',
-                opacity=alt.value(0.5),
-                tooltip=['Node', 'x', 'y', 'z', 'timestamp', 'period']
-            )
-            # Add text labels for each point (Node names)
 
-            text = points.mark_text(
-                align='left',
-                dx=5,  # distance from the point
-                dy=-5
-            ).encode(
-                text='Node:N'
-            )
-
-            ref_shape_period_plot = alt.Chart(ref_xy_df).mark_line().encode(
-                x = 'ref_x',
-                y = 'ref_y',
-                order = 'order'
-            )
-            latest_shape_period_plot = alt.Chart(_xy_df).mark_line(strokeDash=[5,5],color='red').encode(
-                x='x',
-                y='y',
-                order='order',
-            )
-
-            chart = (points + text + ref_shape_period_plot + latest_shape_period_plot).interactive()
-
-            st.altair_chart(chart, use_container_width=True)
+            ## DISPLACEMENT PLOT BY PERIOD
 
             st.subheader("Relative Movement Plot - Period")
 
             points_period = alt.Chart(group_by_node_period).mark_circle(size=75).encode(
                 x='x:Q',
                 y='y:Q',
-                color=alt.Color('period:T', scale = alt.Scale(scheme='dark2')),
+                color=alt.Color('period:T', scale=alt.Scale(scheme='dark2')),
                 opacity=alt.value(0.5),
                 tooltip=['Node', 'x', 'y', 'z', 'period']
             )
@@ -256,17 +356,17 @@ with dashboard:
                 text='Node:N'
             )
 
-            ref_shape_period_plot = alt.Chart(all_periods_df).mark_line(strokeDash=[8,2]).encode(
-                                x='x:Q',
-                                y='y:Q',
-                                color=alt.Color('period:T',scale=alt.Scale(scheme='category10')),  # Distinguish periods by color
-                                order='order:Q',  # Ensure points are connected in order of angle
-                                tooltip=['period:N', 'x:Q', 'y:Q', 'angle:Q']  # Add interactivity
-                            ).properties(
-                                title="Shapes for Selected Periods (Closed Loop & Angle Sorted)",
-                                width=800,
-                                height=600
-                            ).interactive()
+            ref_shape_period_plot = alt.Chart(all_periods_df).mark_line(strokeDash=[8, 2]).encode(
+                x='x:Q',
+                y='y:Q',
+                color=alt.Color('period:T', scale=alt.Scale(scheme='category10')),  # Distinguish periods by color
+                order='order:Q',  # Ensure points are connected in order of angle
+                tooltip=['period:N', 'x:Q', 'y:Q', 'angle:Q']  # Add interactivity
+            ).properties(
+                title="Shapes for Selected Periods (Closed Loop & Angle Sorted)",
+                width=800,
+                height=600
+            ).interactive()
 
             chart_period = (points_period + text_period + ref_shape_period_plot).interactive()
             st.altair_chart(chart_period, use_container_width=True)
@@ -289,6 +389,9 @@ with dashboard:
             # Filter data for the specified Node
             specified_node = crown_node  # Change this to the desired Node
             node_data = group_by_node_period[group_by_node_period['Node'] == specified_node]
+            moving_average = group_by_node_period[group_by_node_period['Node'] == specified_node].copy()
+            moving_average['7d-Mavg'] = group_by_node_period[group_by_node_period['Node'] == specified_node]['diff_displacement'].rolling(
+                    window=moving_day).mean()
 
             # Melt the DataFrame to make it suitable for Altair
             melted_data = node_data.melt(
@@ -309,7 +412,7 @@ with dashboard:
                 width=600,
                 height=300
             ).facet(
-                facet=alt.Facet('Metric:N', title='Histogram Plot'),
+                facet=alt.Facet('Metric:N', title='Distribution of Velocity (mm/day)'),
                 columns=3
             )
 
@@ -321,30 +424,29 @@ with dashboard:
 
             melted_data_2 = node_data_2.melt(
                 id_vars=['Node','period'],
-                value_vars=['signed_diff_disp'],
+                value_vars=['diff_displacement'],
                 var_name='Metric',
                 value_name='Value'
             )
 
             line_chart = alt.Chart(melted_data_2).mark_line(point=True).encode(
                 x=alt.X('period:T', title='Period'),
-                y=alt.Y('Value:Q', title='Signed Displacement'),
+                y=alt.Y('Value:Q', title='Diff Displacement'),
                 tooltip=['period', 'Value:Q']
             ).properties(
-                title='Daily Differential Movement',
+                title='Velocity - daily differential displacement (mm/day)',
                 width=600,
                 height=400
             )
 
             st.altair_chart(line_chart, use_container_width=True)
-
             # Moving Average Plot
-            line_chart_Mavg = alt.Chart(group_by_node_period[group_by_node_period['Node']==specified_node]).mark_line(point=True).encode(
+            line_chart_Mavg = alt.Chart(moving_average).mark_line(point=True).encode(
                 x=alt.X('period:T', title='Period'),
-                y=alt.Y('displacement:Q', title='Displacement'),
-                tooltip=['period', '4d-Mavg:Q']
+                y=alt.Y('7d-Mavg:Q', title='Displacement'),
+                tooltip=['period', '7d-Mavg:Q']
             ).properties(
-                title='Accumulate Displacement Over Period',
+                title=f'{moving_day} days-Moving Average of Velocity',
                 width=600,
                 height=400
             )
@@ -353,11 +455,11 @@ with dashboard:
 
             # Histogram
             histogram_diff_disp = alt.Chart(melted_data_2).mark_bar().encode(
-                x=alt.X('Value:Q', bin=True, title='Signed Displacement'),
+                x=alt.X('Value:Q', bin=True, title='Velocity (mm/day)'),
                 y=alt.Y('count():Q', title='Count'),
                 tooltip=['count():Q']
             ).properties(
-                title='Histogram of Signed Displacement',
+                title='Histogram of Velocity, mm/day',
                 width=600,
                 height=400
             )
